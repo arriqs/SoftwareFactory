@@ -67,7 +67,17 @@ fork: add QA entry to BOARD_COLUMNS array
 
 This makes it clear during `git merge upstream/main` which lines are ours and must be kept.
 
-### 8. Sync with upstream regularly
+### 8. Set `gh` default to the fork
+
+Because this is a fork, `gh pr create` defaults to opening PRs against upstream (cline/kanban). Run this once per clone to fix it:
+
+```bash
+gh repo set-default arriqs/SoftwareFactory
+```
+
+Always verify the PR URL after creation — it should point to `arriqs/SoftwareFactory`, not `cline/kanban`.
+
+### 9. Sync with upstream regularly
 
 ```bash
 git fetch upstream
