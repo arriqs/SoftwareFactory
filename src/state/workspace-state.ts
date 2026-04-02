@@ -9,6 +9,7 @@ import {
 	type RuntimeBoardColumnId,
 	type RuntimeBoardData,
 	type RuntimeGitRepositoryInfo,
+	type RuntimeRepoEntryWithGit,
 	type RuntimeTaskSessionSummary,
 	type RuntimeWorkspaceStateResponse,
 	type RuntimeWorkspaceStateSaveRequest,
@@ -28,7 +29,7 @@ const INDEX_FILENAME = "index.json";
 const BOARD_FILENAME = "board.json";
 const SESSIONS_FILENAME = "sessions.json";
 const META_FILENAME = "meta.json";
-const INDEX_VERSION = 1;
+const INDEX_VERSION = 2;
 const WORKSPACE_ID_COLLISION_SUFFIX_LENGTH = 4;
 
 const BOARD_COLUMNS: Array<{ id: RuntimeBoardColumnId; title: string }> = [
@@ -38,19 +39,40 @@ const BOARD_COLUMNS: Array<{ id: RuntimeBoardColumnId; title: string }> = [
 	{ id: "trash", title: "Trash" },
 ];
 
+interface WorkspaceIndexRepoEntry {
+	id: string;
+	repoPath: string;
+}
+
 interface WorkspaceIndexEntry {
 	workspaceId: string;
-	repoPath: string;
+	name: string;
+	repos: WorkspaceIndexRepoEntry[];
 }
 
 export interface RuntimeWorkspaceIndexEntry {
 	workspaceId: string;
+	name: string;
+	repos: Array<{ id: string; repoPath: string }>;
+	/** Primary repo path for backward compatibility. Returns the first repo's path. */
 	repoPath: string;
 }
 
 interface WorkspaceIndexFile {
 	version: number;
 	entries: Record<string, WorkspaceIndexEntry>;
+	repoPathToId: Record<string, string>;
+}
+
+/** Version 1 entry shape for migration. */
+interface WorkspaceIndexEntryV1 {
+	workspaceId: string;
+	repoPath: string;
+}
+
+interface WorkspaceIndexFileV1 {
+	version: number;
+	entries: Record<string, WorkspaceIndexEntryV1>;
 	repoPathToId: Record<string, string>;
 }
 
@@ -64,9 +86,15 @@ const workspaceStateMetaSchema = z.object({
 	updatedAt: z.number(),
 });
 
+const workspaceIndexRepoEntrySchema = z.object({
+	id: z.string().min(1, "Repo ID cannot be empty."),
+	repoPath: z.string().min(1, "Repo path cannot be empty."),
+});
+
 const workspaceIndexEntrySchema = z.object({
 	workspaceId: z.string().min(1, "Workspace ID cannot be empty."),
-	repoPath: z.string().min(1, "Workspace repository path cannot be empty."),
+	name: z.string().min(1, "Workspace name cannot be empty."),
+	repos: z.array(workspaceIndexRepoEntrySchema),
 });
 
 const workspaceIndexFileSchema = z
@@ -84,13 +112,15 @@ const workspaceIndexFileSchema = z
 					message: `Workspace ID must match entry key "${workspaceId}".`,
 				});
 			}
-			const mappedWorkspaceId = index.repoPathToId[entry.repoPath];
-			if (mappedWorkspaceId !== workspaceId) {
-				context.addIssue({
-					code: z.ZodIssueCode.custom,
-					path: ["entries", workspaceId, "repoPath"],
-					message: `Missing repoPathToId mapping for "${entry.repoPath}" to "${workspaceId}".`,
-				});
+			for (const repo of entry.repos) {
+				const mappedWorkspaceId = index.repoPathToId[repo.repoPath];
+				if (mappedWorkspaceId !== workspaceId) {
+					context.addIssue({
+						code: z.ZodIssueCode.custom,
+						path: ["entries", workspaceId, "repos"],
+						message: `Missing repoPathToId mapping for "${repo.repoPath}" to "${workspaceId}".`,
+					});
+				}
 			}
 		}
 
@@ -104,11 +134,12 @@ const workspaceIndexFileSchema = z
 				});
 				continue;
 			}
-			if (entry.repoPath !== repoPath) {
+			const hasRepo = entry.repos.some((repo) => repo.repoPath === repoPath);
+			if (!hasRepo) {
 				context.addIssue({
 					code: z.ZodIssueCode.custom,
 					path: ["repoPathToId", repoPath],
-					message: `Mapped repoPath does not match workspace entry path "${entry.repoPath}".`,
+					message: `Mapped repoPath "${repoPath}" not found in workspace entry repos.`,
 				});
 			}
 		}
@@ -133,6 +164,7 @@ export interface RuntimeWorkspaceContext {
 	workspaceId: string;
 	statePath: string;
 	git: RuntimeGitRepositoryInfo;
+	repos: RuntimeRepoEntryWithGit[];
 }
 
 export interface LoadWorkspaceContextOptions {
@@ -273,8 +305,50 @@ function parsePersistedStateFile<T>(
 	return parsed.data;
 }
 
+function migrateIndexV1ToV2(v1Index: WorkspaceIndexFileV1): WorkspaceIndexFile {
+	const entries: Record<string, WorkspaceIndexEntry> = {};
+	const repoPathToId: Record<string, string> = {};
+
+	for (const [workspaceId, v1Entry] of Object.entries(v1Index.entries)) {
+		const repoPath = v1Entry?.repoPath;
+		if (typeof repoPath !== "string" || repoPath.length === 0) {
+			throw new Error(
+				`Invalid index.json: workspace entry "${workspaceId}" has missing or empty repoPath. ` +
+					"Fix or remove the file.",
+			);
+		}
+		const repoId = basename(repoPath) || "project";
+		entries[workspaceId] = {
+			workspaceId,
+			name: repoId,
+			repos: [{ id: repoId, repoPath }],
+		};
+		repoPathToId[repoPath] = workspaceId;
+	}
+
+	return {
+		version: INDEX_VERSION,
+		entries,
+		repoPathToId,
+	};
+}
+
 function parseWorkspaceIndex(rawIndex: unknown | null): WorkspaceIndexFile {
 	const indexPath = getWorkspaceIndexPath();
+	if (rawIndex === null) {
+		return createEmptyWorkspaceIndex();
+	}
+
+	// Check if this is a v1 index that needs migration
+	if (
+		typeof rawIndex === "object" &&
+		rawIndex !== null &&
+		"version" in rawIndex &&
+		(rawIndex as { version: unknown }).version === 1
+	) {
+		return migrateIndexV1ToV2(rawIndex as WorkspaceIndexFileV1);
+	}
+
 	return parsePersistedStateFile(
 		indexPath,
 		INDEX_FILENAME,
@@ -321,7 +395,19 @@ async function readWorkspaceMeta(workspaceId: string): Promise<WorkspaceStateMet
 
 async function readWorkspaceIndex(): Promise<WorkspaceIndexFile> {
 	const raw = await readJsonFile(getWorkspaceIndexPath());
-	return parseWorkspaceIndex(raw);
+	const index = parseWorkspaceIndex(raw);
+
+	// Persist migrated index if version was upgraded
+	if (
+		raw !== null &&
+		typeof raw === "object" &&
+		"version" in raw &&
+		(raw as { version: unknown }).version !== INDEX_VERSION
+	) {
+		await writeWorkspaceIndex(index);
+	}
+
+	return index;
 }
 
 async function writeWorkspaceIndex(index: WorkspaceIndexFile): Promise<void> {
@@ -356,20 +442,40 @@ function createWorkspaceIdCollisionSuffix(length: number): string {
 	return suffix;
 }
 
+function entryContainsRepoPath(entry: WorkspaceIndexEntry, repoPath: string): boolean {
+	return entry.repos.some((repo) => repo.repoPath === repoPath);
+}
+
 function createWorkspaceId(index: WorkspaceIndexFile, repoPath: string): string {
 	const baseId = toWorkspaceIdBase(repoPath);
-	if (!index.entries[baseId] || index.entries[baseId]?.repoPath === repoPath) {
+	const existing = index.entries[baseId];
+	if (!existing || entryContainsRepoPath(existing, repoPath)) {
 		return baseId;
 	}
 
 	for (let attempt = 0; attempt < 256; attempt += 1) {
 		const candidate = `${baseId}-${createWorkspaceIdCollisionSuffix(WORKSPACE_ID_COLLISION_SUFFIX_LENGTH)}`;
-		if (!index.entries[candidate] || index.entries[candidate]?.repoPath === repoPath) {
+		const candidateEntry = index.entries[candidate];
+		if (!candidateEntry || entryContainsRepoPath(candidateEntry, repoPath)) {
 			return candidate;
 		}
 	}
 
 	throw new Error(`Could not generate a unique workspace ID for ${repoPath}.`);
+}
+
+function createRepoId(existingRepos: WorkspaceIndexRepoEntry[], repoPath: string): string {
+	const baseId = basename(repoPath) || "project";
+	if (!existingRepos.some((repo) => repo.id === baseId)) {
+		return baseId;
+	}
+	for (let i = 2; i < 256; i++) {
+		const candidate = `${baseId}-${i}`;
+		if (!existingRepos.some((repo) => repo.id === candidate)) {
+			return candidate;
+		}
+	}
+	throw new Error(`Could not generate a unique repo ID for ${repoPath}.`);
 }
 
 function ensureWorkspaceEntry(
@@ -379,7 +485,7 @@ function ensureWorkspaceEntry(
 	const existingWorkspaceId = index.repoPathToId[repoPath];
 	if (existingWorkspaceId) {
 		const existingEntry = index.entries[existingWorkspaceId];
-		if (existingEntry && existingEntry.repoPath === repoPath) {
+		if (existingEntry && entryContainsRepoPath(existingEntry, repoPath)) {
 			return {
 				index,
 				entry: existingEntry,
@@ -389,10 +495,12 @@ function ensureWorkspaceEntry(
 	}
 
 	const workspaceId = createWorkspaceId(index, repoPath);
+	const repoId = basename(repoPath) || "project";
 
 	const entry: WorkspaceIndexEntry = {
 		workspaceId,
-		repoPath,
+		name: repoId,
+		repos: [{ id: repoId, repoPath }],
 	};
 
 	return {
@@ -418,7 +526,7 @@ function findWorkspaceEntry(index: WorkspaceIndexFile, repoPath: string): Worksp
 		return null;
 	}
 	const entry = index.entries[workspaceId];
-	if (!entry || entry.repoPath !== repoPath) {
+	if (!entry || !entryContainsRepoPath(entry, repoPath)) {
 		return null;
 	}
 	return entry;
@@ -532,6 +640,7 @@ function toWorkspaceStateResponse(
 		repoPath: context.repoPath,
 		statePath: context.statePath,
 		git: context.git,
+		repos: context.repos,
 		board,
 		sessions,
 		revision,
@@ -548,6 +657,31 @@ export class WorkspaceStateConflictError extends Error {
 	}
 }
 
+function buildReposWithGit(entry: WorkspaceIndexEntry): RuntimeRepoEntryWithGit[] {
+	return entry.repos.map((repo) => {
+		const git = detectGitRepositoryInfo(repo.repoPath);
+		return {
+			id: repo.id,
+			repoPath: repo.repoPath,
+			name: repo.id,
+			defaultBranch: git.defaultBranch,
+			git,
+		};
+	});
+}
+
+function buildContextFromEntry(repoPath: string, entry: WorkspaceIndexEntry): RuntimeWorkspaceContext {
+	const repos = buildReposWithGit(entry);
+	const primaryRepo = repos.find((r) => r.repoPath === repoPath) ?? repos[0];
+	return {
+		repoPath,
+		workspaceId: entry.workspaceId,
+		statePath: getWorkspaceDirectoryPath(entry.workspaceId),
+		git: primaryRepo?.git ?? detectGitRepositoryInfo(repoPath),
+		repos,
+	};
+}
+
 export async function loadWorkspaceContext(
 	cwd: string,
 	options: LoadWorkspaceContextOptions = {},
@@ -560,12 +694,7 @@ export async function loadWorkspaceContext(
 		if (!existingEntry) {
 			throw new Error(`Project ${repoPath} is not added to Kanban yet.`);
 		}
-		return {
-			repoPath,
-			workspaceId: existingEntry.workspaceId,
-			statePath: getWorkspaceDirectoryPath(existingEntry.workspaceId),
-			git: detectGitRepositoryInfo(repoPath),
-		};
+		return buildContextFromEntry(repoPath, existingEntry);
 	}
 
 	return await lockedFileSystem.withLock(getWorkspaceIndexLockRequest(), async () => {
@@ -579,23 +708,22 @@ export async function loadWorkspaceContext(
 			await writeWorkspaceIndex(index);
 		}
 
-		return {
-			repoPath,
-			workspaceId: ensured.entry.workspaceId,
-			statePath: getWorkspaceDirectoryPath(ensured.entry.workspaceId),
-			git: detectGitRepositoryInfo(repoPath),
-		};
+		return buildContextFromEntry(repoPath, ensured.entry);
 	});
 }
 
 export async function loadWorkspaceContextById(workspaceId: string): Promise<RuntimeWorkspaceContext | null> {
 	const index = await readWorkspaceIndex();
 	const entry = index.entries[workspaceId];
-	if (!entry) {
+	if (!entry || entry.repos.length === 0) {
 		return null;
 	}
 	try {
-		return await loadWorkspaceContext(entry.repoPath);
+		const firstRepo = entry.repos[0];
+		if (!firstRepo) {
+			return null;
+		}
+		return await loadWorkspaceContext(firstRepo.repoPath);
 	} catch {
 		return null;
 	}
@@ -606,9 +734,11 @@ export async function listWorkspaceIndexEntries(): Promise<RuntimeWorkspaceIndex
 	return Object.values(index.entries)
 		.map((entry) => ({
 			workspaceId: entry.workspaceId,
-			repoPath: entry.repoPath,
+			name: entry.name,
+			repos: entry.repos.map((repo) => ({ id: repo.id, repoPath: repo.repoPath })),
+			repoPath: entry.repos[0]?.repoPath ?? "",
 		}))
-		.sort((left, right) => left.repoPath.localeCompare(right.repoPath));
+		.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 export async function removeWorkspaceIndexEntry(workspaceId: string): Promise<boolean> {
@@ -619,7 +749,9 @@ export async function removeWorkspaceIndexEntry(workspaceId: string): Promise<bo
 			return false;
 		}
 		delete index.entries[workspaceId];
-		delete index.repoPathToId[entry.repoPath];
+		for (const repo of entry.repos) {
+			delete index.repoPathToId[repo.repoPath];
+		}
 		await writeWorkspaceIndex(index);
 		return true;
 	});
@@ -634,6 +766,104 @@ export async function removeWorkspaceStateFiles(workspaceId: string): Promise<vo
 				force: true,
 			});
 		},
+	);
+}
+
+export async function addRepoToWorkspaceEntry(
+	workspaceId: string,
+	repoPath: string,
+): Promise<{ repo: WorkspaceIndexRepoEntry; entry: WorkspaceIndexEntry }> {
+	return await lockedFileSystem.withLock(getWorkspaceIndexLockRequest(), async () => {
+		const index = await readWorkspaceIndex();
+
+		// Check if repo already belongs to another workspace
+		const existingOwner = index.repoPathToId[repoPath];
+		if (existingOwner && existingOwner !== workspaceId) {
+			throw new Error(`Repository ${repoPath} already belongs to workspace "${existingOwner}".`);
+		}
+
+		const entry = index.entries[workspaceId];
+		if (!entry) {
+			throw new Error(`Workspace "${workspaceId}" does not exist.`);
+		}
+
+		// Check if repo is already in this workspace
+		if (entryContainsRepoPath(entry, repoPath)) {
+			const existing = entry.repos.find((r) => r.repoPath === repoPath);
+			if (existing) {
+				return { repo: existing, entry };
+			}
+		}
+
+		const repoId = createRepoId(entry.repos, repoPath);
+		const repo: WorkspaceIndexRepoEntry = { id: repoId, repoPath };
+
+		entry.repos.push(repo);
+		index.repoPathToId[repoPath] = workspaceId;
+		await writeWorkspaceIndex(index);
+
+		return { repo, entry };
+	});
+}
+
+export async function removeRepoFromWorkspaceEntry(
+	workspaceId: string,
+	repoId: string,
+): Promise<{ removed: boolean; workspaceDeleted: boolean }> {
+	return await lockedFileSystem.withLock(getWorkspaceIndexLockRequest(), async () => {
+		const index = await readWorkspaceIndex();
+		const entry = index.entries[workspaceId];
+		if (!entry) {
+			return { removed: false, workspaceDeleted: false };
+		}
+
+		const repoIndex = entry.repos.findIndex((repo) => repo.id === repoId);
+		if (repoIndex === -1) {
+			return { removed: false, workspaceDeleted: false };
+		}
+
+		const removedRepo = entry.repos[repoIndex];
+		if (!removedRepo) {
+			return { removed: false, workspaceDeleted: false };
+		}
+		entry.repos.splice(repoIndex, 1);
+		delete index.repoPathToId[removedRepo.repoPath];
+
+		// If no repos remain, delete the workspace entry
+		if (entry.repos.length === 0) {
+			delete index.entries[workspaceId];
+			await writeWorkspaceIndex(index);
+			return { removed: true, workspaceDeleted: true };
+		}
+
+		await writeWorkspaceIndex(index);
+		return { removed: true, workspaceDeleted: false };
+	});
+}
+
+export function resolveRepoPathForTask(context: RuntimeWorkspaceContext, repoId?: string): string {
+	if (repoId) {
+		const repo = context.repos.find((r) => r.id === repoId);
+		if (!repo) {
+			throw new Error(`Repo "${repoId}" not found in workspace "${context.workspaceId}".`);
+		}
+		return repo.repoPath;
+	}
+
+	if (context.repos.length === 1) {
+		const onlyRepo = context.repos[0];
+		if (onlyRepo) {
+			return onlyRepo.repoPath;
+		}
+	}
+
+	if (context.repos.length === 0) {
+		return context.repoPath;
+	}
+
+	throw new Error(
+		`Ambiguous repo for task: workspace "${context.workspaceId}" has ${context.repos.length} repos. ` +
+			"Specify a repoId.",
 	);
 }
 

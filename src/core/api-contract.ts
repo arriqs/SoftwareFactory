@@ -95,6 +95,7 @@ export const runtimeBoardCardSchema = z.object({
 	autoReviewMode: runtimeTaskAutoReviewModeSchema.optional(),
 	images: z.array(runtimeTaskImageSchema).optional(),
 	baseRef: z.string(),
+	repoId: z.string().optional(),
 	createdAt: z.number(),
 	updatedAt: z.number(),
 });
@@ -127,6 +128,19 @@ export const runtimeGitRepositoryInfoSchema = z.object({
 	branches: z.array(z.string()),
 });
 export type RuntimeGitRepositoryInfo = z.infer<typeof runtimeGitRepositoryInfoSchema>;
+
+export const runtimeRepoEntrySchema = z.object({
+	id: z.string().min(1),
+	repoPath: z.string().min(1),
+	name: z.string().min(1),
+	defaultBranch: z.string().nullable(),
+});
+export type RuntimeRepoEntry = z.infer<typeof runtimeRepoEntrySchema>;
+
+export const runtimeRepoEntryWithGitSchema = runtimeRepoEntrySchema.extend({
+	git: runtimeGitRepositoryInfoSchema,
+});
+export type RuntimeRepoEntryWithGit = z.infer<typeof runtimeRepoEntryWithGitSchema>;
 
 export const runtimeGitSyncActionSchema = z.enum(["fetch", "pull", "push"]);
 export type RuntimeGitSyncAction = z.infer<typeof runtimeGitSyncActionSchema>;
@@ -234,6 +248,7 @@ export const runtimeWorkspaceStateResponseSchema = z.object({
 	repoPath: z.string(),
 	statePath: z.string(),
 	git: runtimeGitRepositoryInfoSchema,
+	repos: z.array(runtimeRepoEntryWithGitSchema).optional(),
 	board: runtimeBoardDataSchema,
 	sessions: z.record(z.string(), runtimeTaskSessionSummarySchema),
 	revision: z.number(),
@@ -270,6 +285,7 @@ export const runtimeProjectSummarySchema = z.object({
 	id: z.string(),
 	path: z.string(),
 	name: z.string(),
+	repos: z.array(runtimeRepoEntrySchema).optional(),
 	taskCounts: runtimeProjectTaskCountsSchema,
 });
 export type RuntimeProjectSummary = z.infer<typeof runtimeProjectSummarySchema>;
@@ -442,6 +458,29 @@ export const runtimeProjectRemoveResponseSchema = z.object({
 	error: z.string().optional(),
 });
 export type RuntimeProjectRemoveResponse = z.infer<typeof runtimeProjectRemoveResponseSchema>;
+
+export const runtimeAddRepoToProjectRequestSchema = z.object({
+	repoPath: z.string().min(1),
+});
+export type RuntimeAddRepoToProjectRequest = z.infer<typeof runtimeAddRepoToProjectRequestSchema>;
+
+export const runtimeAddRepoToProjectResponseSchema = z.object({
+	ok: z.boolean(),
+	repo: runtimeRepoEntrySchema.nullable(),
+	error: z.string().optional(),
+});
+export type RuntimeAddRepoToProjectResponse = z.infer<typeof runtimeAddRepoToProjectResponseSchema>;
+
+export const runtimeRemoveRepoFromProjectRequestSchema = z.object({
+	repoId: z.string().min(1),
+});
+export type RuntimeRemoveRepoFromProjectRequest = z.infer<typeof runtimeRemoveRepoFromProjectRequestSchema>;
+
+export const runtimeRemoveRepoFromProjectResponseSchema = z.object({
+	ok: z.boolean(),
+	error: z.string().optional(),
+});
+export type RuntimeRemoveRepoFromProjectResponse = z.infer<typeof runtimeRemoveRepoFromProjectResponseSchema>;
 
 export const runtimeWorktreeEnsureRequestSchema = z.object({
 	taskId: z.string(),
