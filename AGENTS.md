@@ -1,6 +1,16 @@
-## Fork Sync
+## Fork Origin
 
-This repo is a fork of cline/kanban. Before planning or implementing any code changes, always read CONTRIBUTING.md first. It contains fork sync principles that must be followed to preserve our ability to merge from upstream. Violating these principles (e.g., renaming upstream symbols, modifying high-churn upstream files inline, changing internal IDs) creates merge conflicts on every upstream sync.
+This repo is a fork of cline/kanban. Fork syncing is not a priority — feel free to modify any file in the codebase without restriction. We may occasionally cherry-pick useful changes from upstream.
+
+## GitHub Issues
+
+When creating GitHub issues, focus on the problem, not the solution. Issue descriptions should contain:
+- **The problem being solved** — what is broken, missing, or painful
+- **The impact** — who is affected and how severely
+- **The benefit of solving it** — what improves when this is fixed
+- **Perceived complexity** — rough estimate (Low / Medium / High) with a brief explanation of scope
+
+Do not prescribe technical implementation details in issue descriptions. The issue should explain *what* and *why*, not *how*. Implementation decisions belong in PRs, plans, and code — not in the issue tracker.
 
 ---
 
