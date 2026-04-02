@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { getRuntimeTrpcClient } from "@/runtime/trpc-client";
 import type { TaskImage } from "@/types";
+import { handleClipboardPasteFallback } from "@/utils/clipboard-paste-fallback";
 import { useDebouncedEffect } from "@/utils/react-use";
 
 const FILE_MENTION_LIMIT = 8;
@@ -259,11 +260,15 @@ export function TaskPromptComposer({
 
 	const handlePaste = useCallback(
 		(event: ClipboardEvent<HTMLTextAreaElement>) => {
-			if (!onImagesChange || !event.clipboardData) {
+			if (!event.clipboardData) {
 				return;
 			}
 			const imageFiles = collectImageFilesFromDataTransfer(event.clipboardData);
 			if (imageFiles.length === 0) {
+				handleClipboardPasteFallback(event);
+				return;
+			}
+			if (!onImagesChange) {
 				return;
 			}
 			event.preventDefault();

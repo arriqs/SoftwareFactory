@@ -32,6 +32,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { getRuntimeTrpcClient } from "@/runtime/trpc-client";
 import type { RuntimeClineReasoningEffort, RuntimeSlashCommand, RuntimeTaskSessionMode } from "@/runtime/types";
 import type { TaskImage } from "@/types";
+import { handleClipboardPasteFallback } from "@/utils/clipboard-paste-fallback";
 import { isMacPlatform } from "@/utils/platform";
 import { useDebouncedEffect } from "@/utils/react-use";
 
@@ -205,6 +206,7 @@ export function ClineChatComposer({
 			}
 			const imageFiles = collectImageFilesFromDataTransfer(event.clipboardData);
 			if (imageFiles.length === 0) {
+				handleClipboardPasteFallback(event);
 				return;
 			}
 			event.preventDefault();
