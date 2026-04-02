@@ -110,6 +110,21 @@ function isCopyShortcut(event: KeyboardEvent): boolean {
 	);
 }
 
+function isPasteShortcut(event: KeyboardEvent): boolean {
+	if (event.type !== "keydown" || event.key.toLowerCase() !== "v") {
+		return false;
+	}
+	// macOS: Cmd+V
+	if (isMacPlatform && event.metaKey && !event.shiftKey) {
+		return true;
+	}
+	// Linux/Windows: Ctrl+Shift+V (standard terminal paste) or Ctrl+V
+	if (!isMacPlatform && event.ctrlKey) {
+		return true;
+	}
+	return false;
+}
+
 function getParkingRoot(): HTMLDivElement {
 	const existingRoot = document.getElementById(PARKING_ROOT_ID);
 	if (existingRoot instanceof HTMLDivElement) {
@@ -212,6 +227,19 @@ class PersistentTerminal {
 				void navigator.clipboard.writeText(this.terminal.getSelection()).catch(() => {
 					// Ignore clipboard failures.
 				});
+				return false;
+			}
+			if (isPasteShortcut(event)) {
+				void navigator.clipboard
+					.readText()
+					.then((text) => {
+						if (text) {
+							this.terminal.paste(text);
+						}
+					})
+					.catch(() => {
+						// Ignore clipboard failures.
+					});
 				return false;
 			}
 			return true;
