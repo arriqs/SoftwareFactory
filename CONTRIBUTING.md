@@ -86,6 +86,29 @@ git merge upstream/main
 
 Merge (don't rebase) upstream into our main. Frequent small merges are far easier than infrequent large ones.
 
+## Development Workflow
+
+### Issues first, then code
+
+Every feature and bug fix starts with a GitHub issue. The process is:
+
+1. **Create a GitHub issue** describing the problem (see AGENTS.md for issue writing guidelines — focus on problem/impact/benefit, not implementation)
+2. **Add the issue to the GitHub project backlog** so it is tracked and prioritized
+3. **Update the issue status** throughout development (e.g., In Progress, In Review)
+4. **Create a branch and PR** that references the issue (`Fixes #N` or `Closes #N` in the PR body)
+5. **Close the issue** when the corresponding PR(s) are merged (this happens automatically when using `Fixes #N`)
+
+### When issues are not required
+
+PRs for minor chores do **not** need a corresponding issue. Examples:
+- Updating `CLAUDE.md`, `AGENTS.md`, or `CONTRIBUTING.md`
+- Fixing typos or formatting
+- Updating dependencies without behavior changes
+
+### When issues are required
+
+PRs that implement features or fix bugs **must** have a GitHub issue created for and/or linked to them. Do not merge feature or bug fix PRs without a tracked issue.
+
 ---
 
 # Contributing to Kanban (Upstream)
